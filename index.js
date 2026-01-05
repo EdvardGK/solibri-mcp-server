@@ -6,11 +6,181 @@
  */
 
 const express = require('express');
-const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
 const config = require('./config');
 const autorun = require('./solibri/autorun');
 const restClient = require('./solibri/rest-client');
+
+// Define all tools
+const TOOLS = [
+  {
+    name: 'solibri_list_assets',
+    description: 'List available Solibri assets (classifications, rulesets, ITOs, templates)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['classifications', 'rulesets', 'ito', 'templates'],
+          description: 'Type of assets to list',
+        },
+      },
+      required: ['type'],
+    },
+    handler: async ({ type }) => {
+      const assets = autorun.listAssets(type);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ type, assets, count: assets.length }, null, 2) }],
+      };
+    },
+  },
+  {
+    name: 'solibri_check_model',
+    description: 'Run model checking on an IFC/SMC file with specified rulesets',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        modelPath: { type: 'string', description: 'Path to IFC or SMC file' },
+        rulesets: { type: 'array', items: { type: 'string' }, description: 'List of ruleset files to apply' },
+        classifications: { type: 'array', items: { type: 'string' }, description: 'Classification files (optional)' },
+        outputBcf: { type: 'string', description: 'Path for BCF output file (optional)' },
+        outputSmc: { type: 'string', description: 'Path to save SMC model (optional)' },
+      },
+      required: ['modelPath', 'rulesets'],
+    },
+    handler: async ({ modelPath, rulesets, classifications = [], outputBcf, outputSmc }) => {
+      const commands = [{ type: 'openmodel', file: modelPath }];
+      for (const cls of classifications) commands.push({ type: 'openclassification', file: cls });
+      for (const rs of rulesets) commands.push({ type: 'openruleset', file: rs });
+      commands.push({ type: 'check' });
+      if (outputBcf) commands.push({ type: 'bcfreport', file: outputBcf, version: '2.1' });
+      if (outputSmc) commands.push({ type: 'savemodel', file: outputSmc });
+      commands.push({ type: 'exit' });
+
+      try {
+        const result = await autorun.executeAutorun(commands);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ success: true, jobId: result.jobId, outputBcf, outputSmc }, null, 2) }],
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'solibri_quantity_takeoff',
+    description: 'Run Information Takeoff (ITO) and export to Excel',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        modelPath: { type: 'string', description: 'Path to IFC or SMC file' },
+        itoFile: { type: 'string', description: 'Path to ITO definition file' },
+        outputExcel: { type: 'string', description: 'Path for Excel output file' },
+        templateFile: { type: 'string', description: 'Excel template file (optional)' },
+        itoName: { type: 'string', description: 'Specific ITO name to run (optional)' },
+        title: { type: 'string', description: 'Report title (optional)' },
+      },
+      required: ['modelPath', 'itoFile', 'outputExcel'],
+    },
+    handler: async ({ modelPath, itoFile, outputExcel, templateFile, itoName, title }) => {
+      const commands = [
+        { type: 'openmodel', file: modelPath },
+        { type: 'openito', file: itoFile },
+        { type: 'takeoff', name: itoName },
+        { type: 'itoreport', file: outputExcel, templatefile: templateFile, name: itoName, title },
+        { type: 'exit' },
+      ];
+
+      try {
+        const result = await autorun.executeAutorun(commands);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ success: true, jobId: result.jobId, outputExcel }, null, 2) }],
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'solibri_create_model',
+    description: 'Create a new Solibri model from multiple IFC files',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ifcFiles: { type: 'array', items: { type: 'string' }, description: 'List of IFC file paths' },
+        outputSmc: { type: 'string', description: 'Path for output SMC file' },
+        classifications: { type: 'array', items: { type: 'string' }, description: 'Classification files (optional)' },
+      },
+      required: ['ifcFiles', 'outputSmc'],
+    },
+    handler: async ({ ifcFiles, outputSmc, classifications = [] }) => {
+      const commands = [];
+      for (const ifc of ifcFiles) commands.push({ type: 'openmodel', file: ifc });
+      for (const cls of classifications) commands.push({ type: 'openclassification', file: cls });
+      commands.push({ type: 'savemodel', file: outputSmc });
+      commands.push({ type: 'exit' });
+
+      try {
+        const result = await autorun.executeAutorun(commands);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ success: true, jobId: result.jobId, outputSmc, ifcCount: ifcFiles.length }, null, 2) }],
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'solibri_update_model',
+    description: 'Update an existing SMC model with new/updated IFC files',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        smcPath: { type: 'string', description: 'Path to existing SMC file' },
+        ifcFiles: { type: 'array', items: { type: 'string' }, description: 'IFC files to update/add' },
+        outputSmc: { type: 'string', description: 'Path for output SMC file (optional, defaults to input)' },
+      },
+      required: ['smcPath', 'ifcFiles'],
+    },
+    handler: async ({ smcPath, ifcFiles, outputSmc }) => {
+      const commands = [{ type: 'openmodel', file: smcPath }];
+      for (const ifc of ifcFiles) commands.push({ type: 'updatemodel', file: ifc });
+      commands.push({ type: 'savemodel', file: outputSmc || smcPath });
+      commands.push({ type: 'exit' });
+
+      try {
+        const result = await autorun.executeAutorun(commands);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ success: true, jobId: result.jobId, outputSmc: outputSmc || smcPath }, null, 2) }],
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+      }
+    },
+  },
+  {
+    name: 'solibri_status',
+    description: 'Get status of running Solibri instance (requires REST API enabled)',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async () => {
+      try {
+        const [ping, about, status] = await Promise.all([
+          restClient.ping().catch(() => null),
+          restClient.about().catch(() => null),
+          restClient.status().catch(() => null),
+        ]);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ running: !!ping, about, status }, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ running: false, error: error.message }, null, 2) }],
+        };
+      }
+    },
+  },
+];
 
 // Initialize Express
 const app = express();
@@ -19,46 +189,86 @@ app.use(express.json());
 // Auth middleware
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
-
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid authorization header' });
+    return res.status(401).json({ error: 'Missing authorization header' });
   }
-
   const token = authHeader.substring(7);
   if (token !== config.SSE.authToken) {
     return res.status(403).json({ error: 'Invalid token' });
   }
-
   next();
 }
 
-// Health check (no auth required)
+// Health check (no auth)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', server: config.SERVER_NAME, version: config.SERVER_VERSION });
 });
 
-// SSE endpoint (auth required)
+// Store active transports
 const transports = new Map();
 
-app.get('/sse', authenticate, (req, res) => {
+// SSE endpoint
+app.get('/sse', authenticate, async (req, res) => {
   console.log('[SSE] New client connection');
 
   const transport = new SSEServerTransport('/messages', res);
-  const server = createMcpServer();
+
+  // Create server instance for this connection
+  const server = new Server(
+    { name: config.SERVER_NAME, version: config.SERVER_VERSION },
+    { capabilities: { tools: {} } }
+  );
+
+  // Handle all requests
+  server.fallbackRequestHandler = async (request) => {
+    const { method, params } = request;
+    console.log(`[MCP] ${method}`);
+
+    if (method === 'initialize') {
+      return {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: config.SERVER_NAME, version: config.SERVER_VERSION },
+      };
+    }
+
+    if (method === 'tools/list') {
+      return {
+        tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+      };
+    }
+
+    if (method === 'resources/list') return { resources: [] };
+    if (method === 'prompts/list') return { prompts: [] };
+
+    if (method === 'tools/call') {
+      const { name, arguments: args = {} } = params || {};
+      const tool = TOOLS.find((t) => t.name === name);
+      if (tool) {
+        try {
+          return await tool.handler(args);
+        } catch (error) {
+          return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+        }
+      }
+      return { error: { code: -32601, message: `Tool not found: ${name}` } };
+    }
+
+    return { error: { code: -32601, message: `Method not found: ${method}` } };
+  };
 
   transports.set(transport, server);
 
-  transport.onClose = () => {
+  req.on('close', () => {
     console.log('[SSE] Client disconnected');
     transports.delete(transport);
-  };
+  });
 
-  server.connect(transport);
+  await server.connect(transport);
 });
 
+// Messages endpoint for SSE
 app.post('/messages', authenticate, async (req, res) => {
-  // Find the transport for this session
-  // In practice, you'd want session management here
   const [transport] = transports.keys();
   if (transport) {
     await transport.handlePostMessage(req, res);
@@ -67,503 +277,6 @@ app.post('/messages', authenticate, async (req, res) => {
   }
 });
 
-/**
- * Create MCP Server with Solibri tools
- */
-function createMcpServer() {
-  const server = new McpServer({
-    name: config.SERVER_NAME,
-    version: config.SERVER_VERSION,
-  });
-
-  // Register tools
-  registerTools(server);
-
-  return server;
-}
-
-/**
- * Register all Solibri tools
- */
-function registerTools(server) {
-  // ============================================
-  // ASSET MANAGEMENT
-  // ============================================
-
-  server.tool(
-    'solibri_list_assets',
-    'List available Solibri assets (classifications, rulesets, ITOs, templates)',
-    {
-      type: {
-        type: 'string',
-        enum: ['classifications', 'rulesets', 'ito', 'templates'],
-        description: 'Type of assets to list',
-      },
-    },
-    async ({ type }) => {
-      const assets = autorun.listAssets(type);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ type, assets, count: assets.length }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  // ============================================
-  // MODEL CHECKING
-  // ============================================
-
-  server.tool(
-    'solibri_check_model',
-    'Run model checking on an IFC/SMC file with specified rulesets',
-    {
-      modelPath: {
-        type: 'string',
-        description: 'Path to IFC or SMC file',
-      },
-      rulesets: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'List of ruleset files to apply',
-      },
-      classifications: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'List of classification files to apply (optional)',
-      },
-      outputBcf: {
-        type: 'string',
-        description: 'Path for BCF output file (optional)',
-      },
-      outputSmc: {
-        type: 'string',
-        description: 'Path to save SMC model (optional)',
-      },
-    },
-    async ({ modelPath, rulesets, classifications = [], outputBcf, outputSmc }) => {
-      const commands = [];
-
-      // Open model
-      commands.push({ type: 'openmodel', file: modelPath });
-
-      // Apply classifications
-      for (const cls of classifications) {
-        commands.push({ type: 'openclassification', file: cls });
-      }
-
-      // Apply rulesets
-      for (const rs of rulesets) {
-        commands.push({ type: 'openruleset', file: rs });
-      }
-
-      // Run check
-      commands.push({ type: 'check' });
-
-      // Export BCF if requested
-      if (outputBcf) {
-        commands.push({ type: 'bcfreport', file: outputBcf, version: '2.1' });
-      }
-
-      // Save model if requested
-      if (outputSmc) {
-        commands.push({ type: 'savemodel', file: outputSmc });
-      }
-
-      // Exit
-      commands.push({ type: 'exit' });
-
-      try {
-        const result = await autorun.executeAutorun(commands);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                jobId: result.jobId,
-                outputBcf,
-                outputSmc,
-                message: 'Model check completed',
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ============================================
-  // QUANTITY TAKEOFF
-  // ============================================
-
-  server.tool(
-    'solibri_quantity_takeoff',
-    'Run Information Takeoff (ITO) and export to Excel',
-    {
-      modelPath: {
-        type: 'string',
-        description: 'Path to IFC or SMC file',
-      },
-      itoFile: {
-        type: 'string',
-        description: 'Path to ITO definition file',
-      },
-      outputExcel: {
-        type: 'string',
-        description: 'Path for Excel output file',
-      },
-      templateFile: {
-        type: 'string',
-        description: 'Excel template file (optional)',
-      },
-      itoName: {
-        type: 'string',
-        description: 'Specific ITO name to run (optional, runs all if not specified)',
-      },
-      title: {
-        type: 'string',
-        description: 'Report title (optional)',
-      },
-    },
-    async ({ modelPath, itoFile, outputExcel, templateFile, itoName, title }) => {
-      const commands = [];
-
-      // Open model
-      commands.push({ type: 'openmodel', file: modelPath });
-
-      // Open ITO
-      commands.push({ type: 'openito', file: itoFile });
-
-      // Run takeoff
-      commands.push({ type: 'takeoff', name: itoName });
-
-      // Export report
-      commands.push({
-        type: 'itoreport',
-        file: outputExcel,
-        templatefile: templateFile,
-        name: itoName,
-        title: title,
-      });
-
-      // Exit
-      commands.push({ type: 'exit' });
-
-      try {
-        const result = await autorun.executeAutorun(commands);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                jobId: result.jobId,
-                outputExcel,
-                message: 'Quantity takeoff completed',
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ============================================
-  // MODEL MANAGEMENT
-  // ============================================
-
-  server.tool(
-    'solibri_create_model',
-    'Create a new Solibri model from multiple IFC files',
-    {
-      ifcFiles: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'List of IFC file paths to combine',
-      },
-      outputSmc: {
-        type: 'string',
-        description: 'Path for output SMC file',
-      },
-      classifications: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Classification files to apply (optional)',
-      },
-    },
-    async ({ ifcFiles, outputSmc, classifications = [] }) => {
-      const commands = [];
-
-      // Open all IFC files
-      for (const ifc of ifcFiles) {
-        commands.push({ type: 'openmodel', file: ifc });
-      }
-
-      // Apply classifications
-      for (const cls of classifications) {
-        commands.push({ type: 'openclassification', file: cls });
-      }
-
-      // Save combined model
-      commands.push({ type: 'savemodel', file: outputSmc });
-      commands.push({ type: 'exit' });
-
-      try {
-        const result = await autorun.executeAutorun(commands);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                jobId: result.jobId,
-                outputSmc,
-                ifcCount: ifcFiles.length,
-                message: 'Model created successfully',
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  server.tool(
-    'solibri_update_model',
-    'Update an existing SMC model with new/updated IFC files',
-    {
-      smcPath: {
-        type: 'string',
-        description: 'Path to existing SMC file',
-      },
-      ifcFiles: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'IFC files to update/add',
-      },
-      outputSmc: {
-        type: 'string',
-        description: 'Path for output SMC file (can be same as input)',
-      },
-    },
-    async ({ smcPath, ifcFiles, outputSmc }) => {
-      const commands = [];
-
-      // Open existing model
-      commands.push({ type: 'openmodel', file: smcPath });
-
-      // Update with IFC files
-      for (const ifc of ifcFiles) {
-        commands.push({ type: 'updatemodel', file: ifc });
-      }
-
-      // Save
-      commands.push({ type: 'savemodel', file: outputSmc || smcPath });
-      commands.push({ type: 'exit' });
-
-      try {
-        const result = await autorun.executeAutorun(commands);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                jobId: result.jobId,
-                outputSmc: outputSmc || smcPath,
-                updatedFiles: ifcFiles.length,
-                message: 'Model updated successfully',
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ============================================
-  // AUTORUN (RAW)
-  // ============================================
-
-  server.tool(
-    'solibri_autorun',
-    'Execute raw Autorun commands (advanced)',
-    {
-      commands: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            type: { type: 'string' },
-            file: { type: 'string' },
-            name: { type: 'string' },
-            version: { type: 'string' },
-          },
-        },
-        description: 'Array of Autorun commands',
-      },
-    },
-    async ({ commands }) => {
-      try {
-        const result = await autorun.executeAutorun(commands);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                jobId: result.jobId,
-                stdout: result.stdout,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  // ============================================
-  // REST API (when Solibri is running)
-  // ============================================
-
-  server.tool(
-    'solibri_status',
-    'Get status of running Solibri instance (requires REST API enabled)',
-    {},
-    async () => {
-      try {
-        const [pingResult, aboutResult, statusResult] = await Promise.all([
-          restClient.ping().catch(() => null),
-          restClient.about().catch(() => null),
-          restClient.status().catch(() => null),
-        ]);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                running: !!pingResult,
-                about: aboutResult,
-                status: statusResult,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                running: false,
-                error: error.message,
-                hint: 'Start Solibri with --rest-api-server-port flag',
-              }, null, 2),
-            },
-          ],
-        };
-      }
-    }
-  );
-
-  server.tool(
-    'solibri_select_components',
-    'Select components in Solibri by GUID (requires REST API)',
-    {
-      guids: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'IFC GUIDs to select',
-      },
-    },
-    async ({ guids }) => {
-      try {
-        await restClient.setSelectionBasket(guids);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                selectedCount: guids.length,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  server.tool(
-    'solibri_get_bcf',
-    'Export BCF from current Solibri session (requires REST API)',
-    {
-      version: {
-        type: 'string',
-        enum: ['2', '2.1'],
-        description: 'BCF version',
-      },
-    },
-    async ({ version = '2.1' }) => {
-      try {
-        const bcf = await restClient.getBcf(version);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                bcfVersion: version,
-                data: bcf,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [{ type: 'text', text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-    }
-  );
-}
-
 // Start server
 const port = config.SSE.port;
 const host = config.SSE.host;
@@ -571,7 +284,7 @@ const host = config.SSE.host;
 app.listen(port, host, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║           Solibri MCP Server (SSE Transport)                ║
+║           Solibri MCP Server (SSE Transport)                 ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Server:     http://${host}:${port}
 ║  SSE:        http://${host}:${port}/sse
@@ -580,12 +293,12 @@ app.listen(port, host, () => {
 ║  Auth Token: ${config.SSE.authToken.substring(0, 8)}...
 ╚══════════════════════════════════════════════════════════════╝
 
-Add to Claude Code settings.json:
+Configure Claude Code (~/.claude/settings.json):
 {
   "mcpServers": {
     "solibri": {
       "type": "sse",
-      "url": "http://<this-ip>:${port}/sse",
+      "url": "http://<windows-ip>:${port}/sse",
       "headers": {
         "Authorization": "Bearer ${config.SSE.authToken}"
       }
