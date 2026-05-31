@@ -1,4 +1,27 @@
-# Solibri MCP Server
+> # ⚠️ DEPRECATED
+>
+> **This MCP server is no longer maintained.** Active work moved to the more capable toolkit:
+>
+> ### → [`EdvardGK/solibri-toolkit`](https://github.com/EdvardGK/solibri-toolkit)
+>
+> The replacement is broader in scope and architecturally different:
+>
+> | | This repo (deprecated) | [`solibri-toolkit`](https://github.com/EdvardGK/solibri-toolkit) |
+> |---|---|---|
+> | Stack | Node.js MCP server (SSE) | Python stdlib + Java SDK plugin |
+> | Solibri integration | Shells out to Solibri CLI / minimal REST | **In-JVM HTTP server (port 10999) via custom SDK plugin** — fills the gaps the built-in REST API cannot |
+> | Authoring | ❌ no ruleset / classification / presentation authoring | ✅ JSON ruleset install, bulk classification creation, BCF & per-slide viewpoint authoring, ITO, lifecycle (launch/shutdown) |
+> | Discipline + spatial truth | ❌ | ✅ ARK-as-spatial-truth indexing across federation, discipline set via internal API |
+> | Cross-session use | MCP over SSE | CLI (`cli.py …`) + Python `SuperuserClient` + same CLI works in any session |
+> | Status | January 2026 spike; not actively used | Active development; this repo's MCP-style remote-access pattern can be reintroduced as a thin wrapper over the toolkit if needed |
+>
+> Open issues / PRs in this repo will not be addressed. Please file against the new toolkit.
+
+---
+
+# Solibri MCP Server (historical)
+
+> The content below is preserved for historical reference. See deprecation notice above.
 
 MCP server for Solibri automation. Runs on Windows alongside Solibri Office, accessible remotely via SSE transport.
 
@@ -19,14 +42,9 @@ MCP server for Solibri automation. Runs on Windows alongside Solibri Office, acc
 ## Installation
 
 ```powershell
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/solibri-mcp-server.git
+git clone https://github.com/EdvardGK/solibri-mcp-server.git
 cd solibri-mcp-server
-
-# Install dependencies
 npm install
-
-# Configure
 copy .env.example .env
 # Edit .env with your settings
 ```
@@ -36,19 +54,9 @@ copy .env.example .env
 Edit `.env`:
 
 ```env
-# Generate a secure token
 SOLIBRI_MCP_TOKEN=your-secure-token-here
-
-# Solibri executable path
 SOLIBRI_EXE_PATH=C:\Program Files\Solibri\SOLIBRI\Solibri.exe
-
-# Server port
 SOLIBRI_MCP_PORT=3000
-```
-
-Generate a secure token:
-```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 ## Running
@@ -57,20 +65,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 npm start
 ```
 
-The server will display connection info:
-```
-╔══════════════════════════════════════════════════════════════╗
-║           Solibri MCP Server (SSE Transport)                ║
-╠══════════════════════════════════════════════════════════════╣
-║  Server:     http://0.0.0.0:3000
-║  SSE:        http://0.0.0.0:3000/sse
-║  Health:     http://0.0.0.0:3000/health
-╚══════════════════════════════════════════════════════════════╝
-```
-
 ## Claude Code Configuration
 
-On your local machine, add to `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -78,74 +75,10 @@ On your local machine, add to `~/.claude/settings.json`:
     "solibri": {
       "type": "sse",
       "url": "http://YOUR_WINDOWS_IP:3000/sse",
-      "headers": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      }
+      "headers": { "Authorization": "Bearer YOUR_TOKEN" }
     }
   }
 }
-```
-
-## Available Tools
-
-### `solibri_list_assets`
-List available classifications, rulesets, ITOs, or templates.
-
-### `solibri_check_model`
-Run model checking with specified rulesets.
-
-```json
-{
-  "modelPath": "C:\\Models\\building.ifc",
-  "rulesets": ["C:\\Rulesets\\my-rules.cset"],
-  "outputBcf": "C:\\Output\\issues.bcf"
-}
-```
-
-### `solibri_quantity_takeoff`
-Run ITO and export to Excel.
-
-```json
-{
-  "modelPath": "C:\\Models\\building.ifc",
-  "itoFile": "C:\\ITO\\quantities.ito",
-  "outputExcel": "C:\\Output\\quantities.xlsx"
-}
-```
-
-### `solibri_create_model`
-Combine multiple IFCs into one SMC.
-
-### `solibri_update_model`
-Update existing SMC with new IFC versions.
-
-### `solibri_autorun`
-Execute raw Autorun commands (advanced).
-
-### `solibri_status`
-Get status of running Solibri (requires REST API).
-
-### `solibri_select_components`
-Select components by GUID in running Solibri.
-
-### `solibri_get_bcf`
-Export BCF from running Solibri session.
-
-## Security
-
-- Always use a strong, randomly generated token
-- Run behind VPN or SSH tunnel for remote access
-- Never expose port 3000 directly to internet
-
-## Running as Windows Service
-
-Use [NSSM](https://nssm.cc/) to run as a service:
-
-```powershell
-nssm install SolibriMCP "C:\Program Files\nodejs\node.exe"
-nssm set SolibriMCP AppParameters "C:\path\to\solibri-mcp-server\index.js"
-nssm set SolibriMCP AppDirectory "C:\path\to\solibri-mcp-server"
-nssm start SolibriMCP
 ```
 
 ## License
